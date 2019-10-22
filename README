@@ -6,3 +6,7 @@ ping探测默认网关,以判断网络是否正常。
 2. 非阻塞式发送ping报文，raw socket，要判断超时；
 3. 创建单独的线程去探测；
 4. 验证在使用DPDK的服务下也能正常。
+
+### 注意
+1. raw_socket套接字需要root权限；非root用户要执行，要先以root用户修改权限 chmod 4755 <bin>
+2. 获取网关ip的方式有多种，/proc/net/route、/etc/sysconfig/network-scripts/ifcfg-eth1

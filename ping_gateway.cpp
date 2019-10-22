@@ -9,12 +9,15 @@
 #include <ctype.h>
 #include <signal.h>
 
-char sendbuf[1024];          // 用来存放将要发送的ip数据包
-struct sockaddr_in sockaddr, recvsock;
-int sockaddr_len = sizeof(struct sockaddr);
-struct hostent *host;
-int sockfd;
-int ping_time = 5;
+#include <iostream>
+#include <vector>
+#include <map>
+#include <string>
+#include <fstream>
+//#include <ifstream>
+
+
+using namespace std;
 
 int main(int argc, char const *argv[])
 {
@@ -23,9 +26,24 @@ int main(int argc, char const *argv[])
         exit(1);
     }
 
+char gateway[32] = {0};
+//string devfile = "\/etc\/sysconfig\/network-scripts\/ifcfg-eth1";
+string devfile = "/etc/sysconfig/network-scripts/ifcfg-eth1";
+GetGatewayAddr(gateway, devfile);
+cout << "eth1 gateway: " << gateway << endl;
+
+get_gateway_addr(gateway);
+cout << "eth1 gateway: " << gateway << endl;
+
     int on = 1;
     int pid;
-    int psend = 0, precv = 0;
+
+    char sendbuf[1024];          // 用来存放将要发送的ip数据包
+    struct sockaddr_in sockaddr, recvsock;
+    int sockaddr_len = sizeof(struct sockaddr);
+    struct hostent *host;
+    int sockfd;
+    int ping_time = 5;
     memset(&sockaddr, 0, sizeof(struct sockaddr));
     if((sockaddr.sin_addr.s_addr = inet_addr(argv[1])) == INADDR_NONE){
         // 说明输入的主机名不是点分十进制,采用域名方式解析
@@ -41,6 +59,7 @@ int main(int argc, char const *argv[])
     // 创建原始套接字 SOCK_RAW 协议类型 IPPROTO_ICMP
     if((sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)) == -1){
         fprintf(stderr, "%s\n", strerror(errno));
+//        return -1;
     }
 
     setuid(getpid());
@@ -53,7 +72,7 @@ int main(int argc, char const *argv[])
     int sendDatalen;
     char recvbuf[1024];
     while(ping_time--){
-        int packlen = packping(i++);
+        int packlen = PackPing(sendbuf, i++);
         if((sendDatalen = sendto(sockfd, sendbuf, packlen,0, (struct sockaddr *)&sockaddr, sizeof(sockaddr))) < 0){
              fprintf(stderr, "send ping package %d error, %s\n", i, strerror(errno));
              continue ;
@@ -63,12 +82,12 @@ int main(int argc, char const *argv[])
             fprintf(stderr, "recvmsg error, %s\n", strerror(errno));
              continue ;
         }
-
-        if((recvDataLen = recvfrom(sockfd, recvbuf, sizeof(recvbuf), 0, (struct sockaddr *)&recvsock, (socklen_t*)&sockaddr_len)) == -1){
-            fprintf(stderr, "recvmsg error, %s\n", strerror(errno));
-            continue;
-        }
-        decodepack(recvbuf, recvDataLen);
+//
+//        if((recvDataLen = recvfrom(sockfd, recvbuf, sizeof(recvbuf), 0, (struct sockaddr *)&recvsock, (socklen_t*)&sockaddr_len)) == -1){
+//            fprintf(stderr, "recvmsg error, %s\n", strerror(errno));
+//            continue;
+//        }
+        DecodePingPacket(recvbuf, recvDataLen);
         sleep(1);
     }
 
@@ -77,26 +96,25 @@ int main(int argc, char const *argv[])
 }
 
 // 发送ping数据包
-int packping(int sendsqe){
+int PackPing(char* sendbuf, int seq){
     struct icmp *icmp_hdr;  // icmp头部指针
-
     icmp_hdr = (struct icmp *)sendbuf;
     icmp_hdr->icmp_type = ICMP_ECHO;
     icmp_hdr->icmp_code = 0;
     icmp_hdr->icmp_hun.ih_idseq.icd_id = getpid();
-    icmp_hdr->icmp_hun.ih_idseq.icd_seq = sendsqe;
+    icmp_hdr->icmp_hun.ih_idseq.icd_seq = seq;
     memset(icmp_hdr->icmp_data, 0, ICMP_DATA_LEN);
     gettimeofday((struct timeval *)icmp_hdr->icmp_data, NULL);
 
     int icmp_total_len = 8 + ICMP_DATA_LEN;
 
     icmp_hdr->icmp_cksum = 0;
-    icmp_hdr->icmp_cksum = checksum((unsigned char *)(sendbuf),icmp_total_len);
+    icmp_hdr->icmp_cksum = CheckSum((unsigned char *)(sendbuf), icmp_total_len);
 
     return icmp_total_len;
 }
 
-int decodepack(char *buf, int len){
+int DecodePingPacket(char *buf, int len){
     struct iphdr *ip_hdr;
     struct icmp *icmp_hdr;
     int iph_lenthg;
@@ -123,10 +141,13 @@ int decodepack(char *buf, int len){
     }
     gettimeofday(&end, NULL);
     rtt = timesubtract((struct timeval *)&icmp_hdr->icmp_data, &end);
-    printf("Received %d bytes from %s, ttl = %d, rtt = %f ms, icmpseq = %d \n", len, inet_ntoa(recvsock.sin_addr),ip_hdr->ttl, rtt, icmp_hdr->icmp_seq);
+//    printf("Received %d bytes from %s, ttl = %d, rtt = %f ms, icmpseq = %d \n", len, inet_ntoa(recvsock.sin_addr),ip_hdr->ttl, rtt, icmp_hdr->icmp_seq);
+    printf("Received %d bytes, ttl = %d, rtt = %f ms, icmpseq = %d \n", len, ip_hdr->ttl, rtt, icmp_hdr->icmp_seq);
 
     return 0;
-}// 计算时间差
+}
+
+// 计算时间差
 float timesubtract(struct timeval *begin, struct timeval *end){
     int n;// 先计算两个时间点相差多少微秒
     n = ( end->tv_sec - begin->tv_sec ) * 1000000
@@ -135,8 +156,16 @@ float timesubtract(struct timeval *begin, struct timeval *end){
     return (float) (n / 1000);
 }
 
+float TimeDiff(struct timeval *begin, struct timeval *end){
+    int n;// 先计算两个时间点相差多少微秒
+    n = ( end->tv_sec - begin->tv_sec ) * 1000000
+        + ( end->tv_usec - begin->tv_usec );
+    // 转化为毫秒返回
+    return (float) (n / 1000);
+}
+
 // 校验和生成
-ushort checksum(unsigned char *buf, int len){
+ushort CheckSum(unsigned char *buf, int len){
     unsigned int sum=0;
     unsigned short *cbuf;
 
@@ -213,4 +242,114 @@ int get_gateway_addr(char *gateway_addr)
     }
     
     return    -1;
+}
+
+static int split_string(const string& str,vector<string>& vec,const string& deli)
+{
+    vec.clear();
+    if(str.empty())
+    {
+        return 0;
+    }
+
+    string::size_type idxA=0,idxB=0;
+    while(idxB != string::npos)
+    {
+        idxB = str.find(deli,idxA);
+        if(idxB != string::npos)
+        {
+            vec.push_back(str.substr(idxA,idxB-idxA));
+            idxB += deli.size();
+        }
+        else
+        {
+            vec.push_back(str.substr(idxA,str.size()-idxA));
+        }
+        idxA = idxB;
+    }
+
+    return vec.size();
+}
+
+static std::istream& safeGetline(std::istream& is, std::string& t)
+{
+    t.clear();
+
+    // The characters in the stream are read one-by-one using a std::streambuf.
+    // That is faster than reading them one-by-one using the std::istream.
+    // Code that uses streambuf this way must be guarded by a sentry object.
+    // The sentry object performs various tasks,
+    // such as thread synchronization and updating the stream state.
+
+    std::istream::sentry se(is, true);
+    std::streambuf* sb = is.rdbuf();
+
+    for(;;) {
+        int c = sb->sbumpc();
+        if (c == '\n')
+        {
+            return is;
+        }
+        else if (c == '\r')
+        {
+            return is;
+        }
+        else if (c == std::streambuf::traits_type::eof())
+        {
+            if(t.empty())
+                is.setstate(std::ios::eofbit);
+            return is;
+        }
+        else
+        {
+            t += (char)c;
+        }
+    }
+}
+
+void readFile(const string& filePath, map<string, string>& fileConf, string deli)
+{
+    std::string path = filePath;
+
+    ifstream ifs(path);
+    if(!ifs) {
+        printf("failed to open the file :%s.", path.c_str());
+        return;
+    }
+
+    fileConf.clear();
+    std::string s;
+
+    vector<string> tmp;
+    while(!safeGetline(ifs, s).eof())
+    {
+        split_string(s, tmp, deli);
+        if (tmp.size() != 2)
+        {
+            continue;
+        }
+        fileConf.insert(make_pair(tmp[0], tmp[1]));
+        printf("get conf %s\t\t\t%s\t%s\n", tmp[0].c_str(), deli.c_str(), tmp[1].c_str());
+
+        s = "";
+    }
+
+    printf("\n\n");
+}
+
+int GetGatewayAddr(char* gatewayAddr, string& devfile)
+{
+	if (devfile.empty()) return -1;
+	map<string, string> infos;
+	readFile(devfile, infos, "=");
+	
+	map<string, string>::iterator iter;
+	iter = infos.find("GATEWAY");
+	if (iter == infos.end()) {
+		fprintf(stderr, "GATEWAY not found in %s", devfile.c_str());
+		return -1;
+	}
+	string strGateway = iter->second.substr(1, iter->second.length() -2);	
+        memcpy(gatewayAddr, strGateway.c_str(), strGateway.length()+1);
+	return 0;
 }
